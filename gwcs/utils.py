@@ -351,16 +351,12 @@ def make_fitswcs_transform(header):
 
     # The tricky stuff!
     sky_model = fitswcs_image(wcs_info)
-    linear_models = new_fitswcs_linear(wcs_info)
-
-    print(sky_model.inverse)
-    #print(linear_models)
-
-    # Now arrange the models so the inputs and outputs are in the right places
+    linear_models = fitswcs_linear(wcs_info)
     all_models = linear_models
     if sky_model:
         all_models.append(sky_model)
 
+    # Now arrange the models so the inputs and outputs are in the right places
     all_models.sort(key=lambda m: m.meta['output_axes'][0])
     input_axes = [ax for m in all_models for ax in m.meta['input_axes']]
     output_axes = [ax for m in all_models for ax in m.meta['output_axes']]
@@ -369,17 +365,10 @@ def make_fitswcs_transform(header):
         transforms.append(input_mapping)
 
     transforms.append(functools.reduce(core._model_oper('&'), all_models))
-    #for i, t in enumerate(all_models):
-    #    print(f"ALLMODEL {i}")
-    #    print(t)
 
     if output_axes != list(range(len(output_axes))):
         output_mapping = astmodels.Mapping(output_axes)
         transforms.append(output_mapping)
-
-    #for i, t in enumerate(transforms):
-    #    print(f"TRANSFORM {i}")
-    #    print(t)
 
     return functools.reduce(core._model_oper('|'), transforms)
 
@@ -438,7 +427,7 @@ def fitswcs_image(header):
                            'output_axes': sky_axes})
     return sky_model
 
-def new_fitswcs_linear(header):
+def fitswcs_linear(header):
     """
     Create WCS linear transforms for any axes not associated with
     celestial coordinates. We require that each world axis aligns
@@ -476,78 +465,6 @@ def new_fitswcs_linear(header):
             raise ValueError(f"Axis {ax} depends on more than one input axis")
 
     return linear_models
-
-def fitswcs_linear(header):
-    """
-    Create a WCS linear transform from a FITS header.
-
-    Parameters
-    ----------
-    header : astropy.io.fits.Header or dict
-        FITS Header or dict with basic FITS WCS keywords.
-
-    """
-    if isinstance(header, fits.Header):
-        wcs_info = read_wcs_from_header(header)
-    elif isinstance(header, dict):
-        wcs_info = header
-    else:
-        raise TypeError("Expected a FITS Header or a dict.")
-
-    pc = wcs_info['PC']
-    # get the part of the PC matrix corresponding to the imaging axes
-    sky_axes, spec_axes, unknown = get_axes(wcs_info)
-    if pc.shape != (2, 2):
-        if not sky_axes and unknown and len(unknown) == 2:
-            sky_axes = unknown
-            unknown = []
-        pixel_axes = tuple(set(j for j in range(wcs_info['NAXIS'])
-                           for i in sky_axes if pc[i, j] != 0))
-        if len(pixel_axes) > 2:
-            raise ValueError("More than 2 pixel axes contribute to the sky coordinates")
-        sky_pc = np.zeros((2, 2))
-        sky_pc[0, 0] = pc[sky_axes[0], pixel_axes[0]]
-        sky_pc[1, 0] = pc[sky_axes[1], pixel_axes[0]]
-        if len(pixel_axes) == 2:
-            sky_pc[0, 1] = pc[sky_axes[0], pixel_axes[1]]
-            sky_pc[1, 1] = pc[sky_axes[1], pixel_axes[1]]
-        else:  # Create an orthogonal axis so we can have an inverse
-            sky_pc[0, 1] = -sky_pc[1, 0]
-            sky_pc[1, 1] = sky_pc[0, 0]
-        pc = sky_pc.copy()
-        print(pc)
-
-    if sky_axes:
-        cdelt = []
-        for i in sky_axes:
-            cdelt.append(wcs_info['CDELT'][i])
-    else:
-        cdelt = wcs_info['CDELT']
-
-    # if wcsaxes == 2:
-    rotation = astmodels.AffineTransformation2D(matrix=pc, name='pc_matrix')
-    # elif wcsaxes == 3 :
-    # rotation = AffineTransformation3D(matrix=matrix)
-    # else:
-    # raise DimensionsError("WCSLinearTransform supports only 2 or 3 dimensions, "
-    # "{0} given".format(wcsaxes))
-
-    # CRPIX shift is always first and always in the pixel frame
-    crpix = wcs_info['CRPIX'][:wcs_info['NAXIS']]
-    translation_models = [astmodels.Shift(-(shift - 1), name='crpix' + str(i + 1))
-                          for i, shift in enumerate(crpix)]
-    translation = functools.reduce(lambda x, y: x & y, translation_models)
-
-    if not wcs_info['has_cd']:
-        # Do not compute scaling since CDELT* = 1 if CD is present.
-        scaling_models = [astmodels.Scale(scale, name='cdelt' + str(i + 1))
-                          for i, scale in enumerate(cdelt)]
-        scaling = functools.reduce(lambda x, y: x & y, scaling_models)
-        wcs_linear = translation | rotation | scaling
-    else:
-        wcs_linear = translation | rotation
-
-    return wcs_linear
 
 
 def fitswcs_nonlinear(header):

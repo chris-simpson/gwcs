@@ -63,12 +63,13 @@ def test_unknown_ctype():
     transform = gwutils.make_fitswcs_transform(wcsinfo)
     x = np.linspace(-5, 7, 10)
     y = np.linspace(-5, 7, 10)
+    z = np.ones_like(x)
     expected = (np.array([-0.00075833, -0.00071019, -0.00066204, -0.00061389, -0.00056574,
                           -0.00051759, -0.00046944, -0.0004213 , -0.00037315, -0.000325]),
                 np.array([-0.00072222, -0.00067407, -0.00062593, -0.00057778, -0.00052963,
                            -0.00048148, -0.00043333, -0.00038519, -0.00033704, -0.00028889])
                 )
-    a, b = transform(x, y)
+    a, b, c = transform(x, y, z)
     assert_allclose(a, expected[0], atol=10**-8)
     assert_allclose(b, expected[1], atol=10**-8)
 
