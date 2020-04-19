@@ -74,6 +74,47 @@ def test_unknown_ctype():
     assert_allclose(b, expected[1], atol=10**-8)
 
 
+def test_longslit_wcs():
+    # WCS for a longslit with spectra dispersed horizontally and the
+    # slit along the y-axis at PA=90
+    hdr = fits.Header(dict([
+        ('CRPIX1', 201.),
+        ('CRPIX2', 1001.),
+        ('CTYPE1', 'WAVE'),
+        ('CRVAL1', 575.),
+        ('CUNIT1', 'nm'),
+        ('CTYPE2', 'RA---TAN'),
+        ('CRVAL2', 270.),
+        ('CTYPE3', 'DEC--TAN'),
+        ('CRVAL3', 20.),
+        ('CD1_1', -0.01),
+        ('CD2_2', -0.0001),
+        ('CD3_2', 0),
+        ('RADECSYS', 'FK5'),
+    ]))
+
+    transform = gwutils.make_fitswcs_transform(hdr)
+    x = np.linspace(0, 400, 5)
+    y = np.linspace(600, 1400, 5)
+
+    expected = (
+        np.array([577, 576, 575, 574, 573]),
+        np.array([270.04256711, 270.02128356, 270., 269.97871644, 269.95743289]),
+        np.array([19.99999492, 19.99999873, 20., 19.99999873, 19.99999492])
+    )
+
+    # Have to do this iteratively until the mdoels.fix_inputs() bug is fixed
+    for i in range(len(x)):
+        a, b, c = transform(x[i], y[i])
+        assert_allclose(a, expected[0][i], atol=10**-8)
+        assert_allclose(b, expected[1][i], atol=10**-8)
+        assert_allclose(c, expected[2][i], atol=10**-8)
+
+        x2, y2 = transform.inverse(a, b, c)
+        assert_allclose(x2, x[i])
+        assert_allclose(y2, y[i])
+
+
 def test_get_axes():
     wcsinfo = {'CTYPE': np.array(['MRSAL1A', 'MRSBE1A', 'WAVE'])}
     cel, spec, other = gwutils.get_axes(wcsinfo)
