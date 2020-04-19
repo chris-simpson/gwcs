@@ -56,8 +56,10 @@ def test_unknown_ctype():
                                [0., 1., 0.],
                                [0., 0., 1.]]),
                'WCSAXES': 3,
-               'has_cd': False
+               'NAXIS': 3
                }
+    wcsinfo['CD'] = (wcsinfo['CDELT'] * wcsinfo['PC'].T).T
+
     transform = gwutils.make_fitswcs_transform(wcsinfo)
     x = np.linspace(-5, 7, 10)
     y = np.linspace(-5, 7, 10)

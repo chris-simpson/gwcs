@@ -90,6 +90,30 @@ def get_values(units, *args):
         result = [a.value for a in args]
     return result
 
+def _get_contributing_axes(wcs_info, world_axes):
+    """
+    Returns a tuple indicating which axes in the pixel frame make a
+    contribution to an axis or axes in the output frame.
+
+    Parameters
+    ----------
+    wcs_info: dict
+        dict of WCS information
+    world_axes: int/iterable of ints
+        axes in the world coordinate system
+
+    Returns
+    -------
+    axes: list
+        axes whose pixel coordinates affect the output axis/axes
+    """
+    cd = wcs_info['CD']
+    try:
+        return sorted(set(np.nonzero(cd[tuple(world_axes), :wcs_info['NAXIS']])[1]))
+    except TypeError:  # world_axes is an int
+        return sorted(np.nonzero(cd[world_axes, :wcs_info['NAXIS']])[0])
+    #return sorted(set(j for j in range(wcs_info['NAXIS'])
+    #                    for i in world_axes if cd[i, j] != 0))
 
 def _compute_lon_pole(skycoord, projection):
     """
@@ -180,7 +204,7 @@ def read_wcs_from_header(header):
     # if not present call get_csystem
     wcs_info['RADESYS'] = header.get('RADESYS', 'ICRS')
     wcs_info['VAFACTOR'] = header.get('VAFACTOR', 1)
-    wcs_info['NAXIS'] = header.get('NAXIS', 0)
+    wcs_info['NAXIS'] = header.get('NAXIS', max(int(k[5:]) for k in header['CRPIX*'].keys()))
     # date keyword?
     # wcs_info['DATEOBS'] = header.get('DATE-OBS', 'DATEOBS')
     wcs_info['EQUINOX'] = header.get("EQUINOX", None)
@@ -203,25 +227,24 @@ def read_wcs_from_header(header):
         wcs_info['has_cd'] = True
     else:
         wcs_info['has_cd'] = False
-    pc = np.zeros((wcsaxes, wcsaxes))
+    cd = np.zeros((wcsaxes, wcsaxes))
     for i in range(1, wcsaxes + 1):
         for j in range(1, wcsaxes + 1):
             try:
                 if wcs_info['has_cd']:
-                    pc[i - 1, j - 1] = header['CD{0}_{1}'.format(i, j)]
+                    cd[i - 1, j - 1] = header['CD{0}_{1}'.format(i, j)]
                 else:
-                    pc[i - 1, j - 1] = header['PC{0}_{1}'.format(i, j)]
+                    cd[i - 1, j - 1] = cdelt[i - 1] * header['PC{0}_{1}'.format(i, j)]
             except KeyError:
                 if i == j:
-                    pc[i - 1, j - 1] = 1.
+                    cd[i - 1, j - 1] = cdelt[i - 1]
                 else:
-                    pc[i - 1, j - 1] = 0.
+                    cd[i - 1, j - 1] = 0.
     wcs_info['CTYPE'] = ctype
     wcs_info['CUNIT'] = cunit
     wcs_info['CRPIX'] = crpix
     wcs_info['CRVAL'] = crval
-    wcs_info['CDELT'] = cdelt
-    wcs_info['PC'] = pc
+    wcs_info['CD'] = cd
     return wcs_info
 
 
@@ -237,7 +260,7 @@ def get_axes(header):
     Returns
     -------
     sky_inmap, spectral_inmap, unknown : lists
-        indices in the input representing sky and spectral cordinates.
+        indices in the output representing sky and spectral coordinates.
 
     """
     if isinstance(header, fits.Header):
@@ -270,7 +293,10 @@ def get_axes(header):
 
 
 def _is_skysys_consistent(ctype, sky_inmap):
-    """ Determine if the sky axes in CTYPE mathch to form a standard celestial system."""
+    """ Determine if the sky axes in CTYPE match to form a standard celestial system."""
+    if len(sky_inmap) != 2:
+        raise ValueError("{} sky coordinate axes found. "
+                         "There must be exactly 2".format(len(sky_inmap)))
 
     for item in sky_pairs.values():
         if ctype[sky_inmap[0]] == item[0]:
@@ -282,7 +308,7 @@ def _is_skysys_consistent(ctype, sky_inmap):
             if ctype[sky_inmap[0]] != item[1]:
                 raise ValueError(
                     "Inconsistent ctype for sky coordinates {0} and {1}".format(*ctype))
-            sky_inmap = sky_inmap[::-1]
+            sky_inmap.reverse()
             break
 
 
@@ -315,14 +341,141 @@ def make_fitswcs_transform(header):
         wcs_info = header
     else:
         raise TypeError("Expected a FITS Header or a dict.")
-    transforms = []
-    wcs_linear = fitswcs_linear(wcs_info)
-    transforms.append(wcs_linear)
-    wcs_nonlinear = fitswcs_nonlinear(wcs_info)
-    if wcs_nonlinear is not None:
-        transforms.append(wcs_nonlinear)
+
+    # CRPIX shift is always first and always in the pixel frame
+    crpix = wcs_info['CRPIX'][:wcs_info['NAXIS']]
+    translation_models = [astmodels.Shift(-(shift - 1), name='crpix' + str(i + 1))
+                          for i, shift in enumerate(crpix)]
+    translation = functools.reduce(lambda x, y: x & y, translation_models)
+    transforms = [translation]
+
+    # The tricky stuff!
+    sky_model = fitswcs_image(wcs_info)
+    linear_models = new_fitswcs_linear(wcs_info)
+
+    print(sky_model.inverse)
+    #print(linear_models)
+
+    # Now arrange the models so the inputs and outputs are in the right places
+    all_models = linear_models
+    if sky_model:
+        all_models.append(sky_model)
+
+    all_models.sort(key=lambda m: m.meta['output_axes'][0])
+    input_axes = [ax for m in all_models for ax in m.meta['input_axes']]
+    output_axes = [ax for m in all_models for ax in m.meta['output_axes']]
+    if input_axes != list(range(len(input_axes))):
+        input_mapping = astmodels.Mapping(input_axes)
+        transforms.append(input_mapping)
+
+    transforms.append(functools.reduce(core._model_oper('&'), all_models))
+    #for i, t in enumerate(all_models):
+    #    print(f"ALLMODEL {i}")
+    #    print(t)
+
+    if output_axes != list(range(len(output_axes))):
+        output_mapping = astmodels.Mapping(output_axes)
+        transforms.append(output_mapping)
+
+    #for i, t in enumerate(transforms):
+    #    print(f"TRANSFORM {i}")
+    #    print(t)
+
     return functools.reduce(core._model_oper('|'), transforms)
 
+def fitswcs_image(header):
+    """
+    Make a complete transform from CRPIX-shifted pixels to
+    sky coordinates from FITS WCS keywords. A Mapping is inserted
+    at the beginning, which may be removed later
+
+    Parameters
+    ----------
+    header : astropy.io.fits.Header or dict
+        FITS Header or dict with basic FITS WCS keywords.
+
+    """
+    if isinstance(header, fits.Header):
+        wcs_info = read_wcs_from_header(header)
+    elif isinstance(header, dict):
+        wcs_info = header
+    else:
+        raise TypeError("Expected a FITS Header or a dict.")
+
+    cd = wcs_info['CD']
+    # get the part of the PC matrix corresponding to the imaging axes
+    sky_axes, spec_axes, unknown = get_axes(wcs_info)
+    if not sky_axes:
+        if len(unknown) == 2:
+            sky_axes = unknown
+        else:  # No sky here
+            return
+    pixel_axes = _get_contributing_axes(wcs_info, sky_axes)
+    if len(pixel_axes) > 2:
+        raise ValueError("More than 2 pixel axes contribute to the sky coordinates")
+
+    # If only one axis is contributing to the sky (e.g., slit spectrum)
+    # then it must be that there's an extra axis in the CD matrix, so we
+    # create a "ghost" orthogonal axis here so an inverse can be defined
+    # Modify the CD matrix in case we have to use a backup Matrix Model later
+    if len(pixel_axes) == 1:
+        cd[sky_axes[0], -1] = -cd[sky_axes[1], pixel_axes[0]]
+        cd[sky_axes[1], -1] = cd[sky_axes[0], pixel_axes[0]]
+        sky_cd = cd[np.ix_(sky_axes, pixel_axes + [-1])]
+        affine = astmodels.AffineTransformation2D(matrix=sky_cd, name='cd_matrix')
+        rotation = astmodels.fix_inputs(affine, {'y': 0})
+        rotation.inverse = affine.inverse | astmodels.Mapping((0,), n_inputs=2)
+    else:
+        sky_cd = cd[np.ix_(sky_axes, pixel_axes)]
+        rotation = astmodels.AffineTransformation2D(matrix=sky_cd, name='cd_matrix')
+
+    projection = fitswcs_nonlinear(wcs_info)
+    if projection:
+        sky_model = rotation | projection
+    else:
+        sky_model = rotation
+    sky_model.meta.update({'input_axes': pixel_axes,
+                           'output_axes': sky_axes})
+    return sky_model
+
+def new_fitswcs_linear(header):
+    """
+    Create WCS linear transforms for any axes not associated with
+    celestial coordinates. We require that each world axis aligns
+    precisely with only a single pixel axis.
+
+    Parameters
+    ----------
+    header : astropy.io.fits.Header or dict
+        FITS Header or dict with basic FITS WCS keywords.
+
+    """
+    if isinstance(header, fits.Header):
+        wcs_info = read_wcs_from_header(header)
+    elif isinstance(header, dict):
+        wcs_info = header
+    else:
+        raise TypeError("Expected a FITS Header or a dict.")
+
+    cd = wcs_info['CD']
+    # get the part of the CD matrix corresponding to the imaging axes
+    sky_axes, spec_axes, unknown = get_axes(wcs_info)
+    if not sky_axes and len(unknown) == 2:
+        unknown = []
+
+    linear_models = []
+    for ax in spec_axes + unknown:
+        pixel_axes = _get_contributing_axes(wcs_info, ax)
+        if len(pixel_axes) == 1:
+            linear_model = (astmodels.Scale(cd[ax, pixel_axes[0]]) |
+                            astmodels.Shift(wcs_info['CRVAL'][ax]))
+            linear_model.meta.update({'input_axes': pixel_axes,
+                                      'output_axes': [ax]})
+            linear_models.append(linear_model)
+        else:
+            raise ValueError(f"Axis {ax} depends on more than one input axis")
+
+    return linear_models
 
 def fitswcs_linear(header):
     """
@@ -345,27 +498,31 @@ def fitswcs_linear(header):
     # get the part of the PC matrix corresponding to the imaging axes
     sky_axes, spec_axes, unknown = get_axes(wcs_info)
     if pc.shape != (2, 2):
-        if sky_axes:
-            i, j = sky_axes
-        elif unknown and len(unknown) == 2:
-            i, j = unknown
+        if not sky_axes and unknown and len(unknown) == 2:
+            sky_axes = unknown
+            unknown = []
+        pixel_axes = tuple(set(j for j in range(wcs_info['NAXIS'])
+                           for i in sky_axes if pc[i, j] != 0))
+        if len(pixel_axes) > 2:
+            raise ValueError("More than 2 pixel axes contribute to the sky coordinates")
         sky_pc = np.zeros((2, 2))
-        sky_pc[0, 0] = pc[i, i]
-        sky_pc[0, 1] = pc[i, j]
-        sky_pc[1, 0] = pc[j, i]
-        sky_pc[1, 1] = pc[j, j]
+        sky_pc[0, 0] = pc[sky_axes[0], pixel_axes[0]]
+        sky_pc[1, 0] = pc[sky_axes[1], pixel_axes[0]]
+        if len(pixel_axes) == 2:
+            sky_pc[0, 1] = pc[sky_axes[0], pixel_axes[1]]
+            sky_pc[1, 1] = pc[sky_axes[1], pixel_axes[1]]
+        else:  # Create an orthogonal axis so we can have an inverse
+            sky_pc[0, 1] = -sky_pc[1, 0]
+            sky_pc[1, 1] = sky_pc[0, 0]
         pc = sky_pc.copy()
+        print(pc)
 
-    sky_axes.extend(unknown)
     if sky_axes:
-        crpix = []
         cdelt = []
         for i in sky_axes:
-            crpix.append(wcs_info['CRPIX'][i])
             cdelt.append(wcs_info['CDELT'][i])
     else:
         cdelt = wcs_info['CDELT']
-        crpix = wcs_info['CRPIX']
 
     # if wcsaxes == 2:
     rotation = astmodels.AffineTransformation2D(matrix=pc, name='pc_matrix')
@@ -375,6 +532,8 @@ def fitswcs_linear(header):
     # raise DimensionsError("WCSLinearTransform supports only 2 or 3 dimensions, "
     # "{0} given".format(wcsaxes))
 
+    # CRPIX shift is always first and always in the pixel frame
+    crpix = wcs_info['CRPIX'][:wcs_info['NAXIS']]
     translation_models = [astmodels.Shift(-(shift - 1), name='crpix' + str(i + 1))
                           for i, shift in enumerate(crpix)]
     translation = functools.reduce(lambda x, y: x & y, translation_models)
@@ -383,7 +542,6 @@ def fitswcs_linear(header):
         # Do not compute scaling since CDELT* = 1 if CD is present.
         scaling_models = [astmodels.Scale(scale, name='cdelt' + str(i + 1))
                           for i, scale in enumerate(cdelt)]
-
         scaling = functools.reduce(lambda x, y: x & y, scaling_models)
         wcs_linear = translation | rotation | scaling
     else:
@@ -418,7 +576,7 @@ def fitswcs_nonlinear(header):
     if sky_axes:
         phip, lonp = [wcs_info['CRVAL'][i] for i in sky_axes]
         # TODO: write "def compute_lonpole(projcode, l)"
-        # Set a defaul tvalue for now
+        # Set a default value for now
         thetap = 180
         n2c = astmodels.RotateNative2Celestial(phip, lonp, thetap, name="crval")
         transforms.append(n2c)
