@@ -1,4 +1,6 @@
-0.12.1 (Unreleased)
+0.13.1 (Unreleased)
+
+0.13.0 (2020-03-26)
 -------------------
 New Features
 ^^^^^^^^^^^^
@@ -9,6 +11,11 @@ New Features
 - Added ``to_fits_sip`` method to generate FITS header with SIP keywords [#286]
 
 - Added ``get_ctype_from_ucd`` function. [#288]
+
+Bug Fixes
+^^^^^^^^^
+
+- Fixed an off by one issue in ``utils.make_fitswcs_transform``. [#290]
 
 0.12.0 (2019-12-24)
 -------------------
