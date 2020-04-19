@@ -223,15 +223,12 @@ def read_wcs_from_header(header):
         crval.append(header.get('CRVAL{0}'.format(i), 0.0))
         cdelt.append(header.get('CDELT{0}'.format(i), 1.0))
 
-    if 'CD1_1' in header:
-        wcs_info['has_cd'] = True
-    else:
-        wcs_info['has_cd'] = False
+    has_cd = 'CD1_1' in header
     cd = np.zeros((wcsaxes, wcsaxes))
     for i in range(1, wcsaxes + 1):
         for j in range(1, wcsaxes + 1):
             try:
-                if wcs_info['has_cd']:
+                if has_cd:
                     cd[i - 1, j - 1] = header['CD{0}_{1}'.format(i, j)]
                 else:
                     cd[i - 1, j - 1] = cdelt[i - 1] * header['PC{0}_{1}'.format(i, j)]
