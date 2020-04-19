@@ -223,20 +223,15 @@ def read_wcs_from_header(header):
         crval.append(header.get('CRVAL{0}'.format(i), 0.0))
         cdelt.append(header.get('CDELT{0}'.format(i), 1.0))
 
-    has_cd = 'CD1_1' in header
+    has_cd = len(header['CD?_?']) > 0
     cd = np.zeros((wcsaxes, wcsaxes))
     for i in range(1, wcsaxes + 1):
         for j in range(1, wcsaxes + 1):
-            try:
-                if has_cd:
-                    cd[i - 1, j - 1] = header['CD{0}_{1}'.format(i, j)]
-                else:
-                    cd[i - 1, j - 1] = cdelt[i - 1] * header['PC{0}_{1}'.format(i, j)]
-            except KeyError:
-                if i == j:
-                    cd[i - 1, j - 1] = cdelt[i - 1]
-                else:
-                    cd[i - 1, j - 1] = 0.
+            if has_cd:
+                cd[i - 1, j - 1] = header.get('CD{0}_{1}'.format(i, j), 0)
+            else:
+                cd[i - 1, j - 1] = cdelt[i - 1] * header.get('PC{0}_{1}'.format(i, j),
+                                                             1 if i == j else 0)
     wcs_info['CTYPE'] = ctype
     wcs_info['CUNIT'] = cunit
     wcs_info['CRPIX'] = crpix
